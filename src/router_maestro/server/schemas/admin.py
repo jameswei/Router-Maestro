@@ -46,6 +46,11 @@ class ModelInfo(BaseModel):
     provider: str = Field(..., description="Provider name")
     id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Display name")
+    max_prompt_tokens: int | None = Field(default=None, description="Maximum prompt tokens (input)")
+    max_output_tokens: int | None = Field(default=None, description="Maximum output tokens")
+    max_context_window_tokens: int | None = Field(
+        default=None, description="Maximum total context window (input + output)"
+    )
 
 
 class ModelsResponse(BaseModel):
