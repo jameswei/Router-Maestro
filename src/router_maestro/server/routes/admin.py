@@ -228,6 +228,9 @@ async def list_models() -> ModelsResponse:
             provider=model.provider,
             id=model.id,
             name=model.name,
+            max_prompt_tokens=model.max_prompt_tokens,
+            max_output_tokens=model.max_output_tokens,
+            max_context_window_tokens=model.max_context_window_tokens,
         )
         for model in models
     ]

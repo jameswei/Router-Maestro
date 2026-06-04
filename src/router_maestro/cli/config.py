@@ -192,16 +192,95 @@ def _select_model(models: list[dict], prompt: str, default: str = "0") -> str:
     Returns the ``provider/id`` model key, or ``"router-maestro"`` for
     auto-routing (choice ``0``).
     """
+    selected = _select_model_dict(models, prompt, default=default)
+    return _model_key(selected) if selected else "router-maestro"
+
+
+def _select_model_dict(models: list[dict], prompt: str, default: str = "0") -> dict | None:
+    """Prompt the user to select a model and return the model dict.
+
+    Returns ``None`` for the auto-routing choice (``0`` or invalid input).
+    """
     choice = Prompt.ask(prompt, default=default)
     if choice != "0" and choice.isdigit():
         idx = int(choice) - 1
         if 0 <= idx < len(models):
-            m = models[idx]
-            if "custom_key" in m:
-                return m["custom_key"]
-            return f"{m['provider']}/{m['id']}"
+            return models[idx]
         console.print(f"[yellow]Invalid selection '{choice}', using auto-routing.[/yellow]")
-    return "router-maestro"
+    return None
+
+
+def _model_key(model: dict) -> str:
+    """Resolve the wire model key for a model dict from the CLI's model list."""
+    if "custom_key" in model:
+        return model["custom_key"]
+    return f"{model['provider']}/{model['id']}"
+
+
+# Claude Code recognizes 1M context windows natively for these model keys (the
+# ones we inject via `_maybe_inject_opus_1m`) — no env var override needed.
+_CLAUDE_CODE_NATIVE_1M_KEYS: frozenset[str] = frozenset(
+    {_OPUS_1M_NATIVE_KEY, _OPUS_47_1M_NATIVE_KEY}
+)
+
+# Default CLAUDE_CODE_AUTO_COMPACT_WINDOW for non-Claude models. Matches
+# Claude Code's built-in window for Claude Opus / Sonnet (200K).
+_CLAUDE_CODE_DEFAULT_AUTO_COMPACT_WINDOW = 200_000
+
+
+def _prompt_auto_compact_window(model: dict | None) -> int | None:
+    """Prompt the user whether to set CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+
+    Returns the chosen token count to write, or ``None`` to skip the env var.
+
+    The prompt has three options:
+      * ``y`` — use the upstream ``max_prompt_tokens`` (if known)
+      * ``n`` — skip; do not set the env var
+      * ``d`` — set the default 200K (recommended for non-Claude models)
+
+    For Claude Code-native 1M model keys (e.g. ``claude-opus-4-7[1m]``), this
+    is skipped entirely because Claude Code already knows the window.
+    """
+    if model is None:
+        return None
+    model_key = _model_key(model)
+    if model_key in _CLAUDE_CODE_NATIVE_1M_KEYS:
+        return None
+
+    upstream = model.get("max_prompt_tokens")
+    default_value = _CLAUDE_CODE_DEFAULT_AUTO_COMPACT_WINDOW
+    upstream_line = (
+        f"  Upstream max_prompt_tokens: {upstream}"
+        if isinstance(upstream, int) and upstream > 0
+        else "  Upstream max_prompt_tokens: (unknown)"
+    )
+
+    console.print()
+    console.print(
+        "[bold]Set CLAUDE_CODE_AUTO_COMPACT_WINDOW?[/bold]\n"
+        f"  Selected: {model_key}\n"
+        f"{upstream_line}\n"
+        f"  [dim]Claude Code only natively recognizes its own models' windows.\n"
+        f"  For everything else, this env var tells it when to auto-compact.\n"
+        f"  Default ({default_value}) matches Claude Opus/Sonnet's 200K window.[/dim]"
+    )
+
+    choices = ["y", "n", "d"]
+    can_use_upstream = isinstance(upstream, int) and upstream > 0
+    if can_use_upstream:
+        prompt_text = f"y = upstream: {upstream} / n = skip / d = default: {default_value}"
+    else:
+        # No upstream value to offer — drop the y option, default stays d.
+        choices = ["n", "d"]
+        prompt_text = f"n = skip / d = default: {default_value}"
+
+    choice = Prompt.ask(prompt_text, choices=choices, default="d").lower()
+
+    if choice == "n":
+        return None
+    if choice == "y" and can_use_upstream:
+        return int(upstream)
+    return default_value
 
 
 @app.callback(invoke_without_command=True)
@@ -262,10 +341,14 @@ def claude_code_config() -> None:
     _display_models(models)
 
     console.print("\n[bold]Step 3: Select main model[/bold]")
-    main_model = _select_model(models, "Enter number (or 0 for auto-routing)")
+    main_model_dict = _select_model_dict(models, "Enter number (or 0 for auto-routing)")
+    main_model = _model_key(main_model_dict) if main_model_dict else "router-maestro"
 
     console.print("\n[bold]Step 4: Select small/fast model[/bold]")
     fast_model = _select_model(models, "Enter number", default="1")
+
+    # Step 4b: Optional auto-compact window override (Claude Code only)
+    auto_compact_window = _prompt_auto_compact_window(main_model_dict)
 
     # Step 5: Generate config
     auth_token = get_current_context_api_key() or "router-maestro"
@@ -283,6 +366,8 @@ def claude_code_config() -> None:
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_ENABLE_LSP": "1",
     }
+    if auto_compact_window is not None:
+        env_config["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(auto_compact_window)
 
     # Load existing settings to preserve other sections (e.g., MCP servers)
     existing_config: dict = {}
@@ -303,11 +388,17 @@ def claude_code_config() -> None:
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(existing_config, f, indent=2)
 
+    auto_compact_line = (
+        f"Auto-compact window: {auto_compact_window} tokens\n\n"
+        if auto_compact_window is not None
+        else ""
+    )
     console.print(
         Panel(
             f"[green]Created {settings_path}[/green]\n\n"
             f"Main model: {main_model}\n"
             f"Fast model: {fast_model}\n\n"
+            f"{auto_compact_line}"
             f"Endpoint: {anthropic_url}\n\n"
             "[dim]Start router-maestro server before using Claude Code:[/dim]\n"
             "  router-maestro server start",
