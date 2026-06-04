@@ -3,7 +3,7 @@
 [![CI](https://github.com/MadSkittles/Router-Maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/MadSkittles/Router-Maestro/actions/workflows/ci.yml)
 [![Release](https://github.com/MadSkittles/Router-Maestro/actions/workflows/release.yml/badge.svg)](https://github.com/MadSkittles/Router-Maestro/actions/workflows/release.yml)
 
-Multi-model routing router with OpenAI-compatible and Anthropic-compatible APIs. Route LLM requests across GitHub Copilot, OpenAI, Anthropic, and custom providers with intelligent fallback and priority-based selection.
+Router-Maestro is a local or self-hosted proxy that lets OpenAI-, Anthropic-, and Gemini-compatible clients use models from GitHub Copilot, OpenAI, Anthropic, and custom providers — with priority-based selection and automatic fallback.
 
 ## TL;DR
 
@@ -13,17 +13,22 @@ Router-Maestro acts as a proxy that gives you access to models from multiple pro
 
 ## Features
 
-- **1M context support**: Activate Opus 4.6 *or* Opus 4.7 with a 1M context window via GitHub Copilot — just select `claude-opus-4-6[1m]` or `claude-opus-4-7[1m]` during `config claude-code` setup. Claude Code's `[1m]` beta header is auto-mapped to the right Copilot variant (`claude-opus-4.6-1m` / `claude-opus-4.7-1m-internal`).
-- **Transparent reasoning-tier routing**: Requests for `claude-opus-4.7` with `reasoning_effort: "high"` or `"xhigh"` (or an Anthropic-style `thinking.budget_tokens` ≥ 8192) are auto-rewritten to the dedicated Copilot variants `claude-opus-4.7-high` / `claude-opus-4.7-xhigh` — no client changes needed.
-- **Fuzzy model matching**: No need to type exact model IDs. Subagents, agent teams, and tools that hardcode model names (e.g. `opus-4-6`, `claude-sonnet-4.5`) are resolved automatically to the correct provider model
+### Core
+
 - **Multi-provider support**: GitHub Copilot (OAuth), OpenAI, Anthropic, and custom OpenAI-compatible endpoints
-- **Intelligent routing**: Priority-based model selection with automatic fallback on failure
 - **Dual API compatibility**: Both OpenAI (`/api/openai/v1/...`) and Anthropic (`/v1/messages`) API formats
 - **Gemini API compatibility**: Gemini REST API format (`/api/gemini/v1beta/...`) for Gemini CLI/SDK
 - **Cross-provider translation**: Seamlessly route OpenAI requests to Anthropic providers and vice versa
-- **Configuration hot-reload**: Auto-reload config files every 5 minutes without server restart
+- **Intelligent routing**: Priority-based model selection with automatic fallback on failure
+- **Fuzzy model matching**: No need to type exact model IDs. Subagents, agent teams, and tools that hardcode model names (e.g. `opus-4-6`, `claude-sonnet-4.5`) are resolved automatically to the correct provider model
 - **CLI management**: Full command-line interface for configuration and server control
 - **Docker ready**: Production-ready Docker images with Traefik integration
+- **Configuration hot-reload**: Auto-reload config files every 5 minutes without server restart
+
+### Advanced
+
+- **1M context support**: Activate Opus 4.6 *or* Opus 4.7 with a 1M context window via GitHub Copilot — just select `claude-opus-4-6[1m]` or `claude-opus-4-7[1m]` during `config claude-code` setup. Claude Code's `[1m]` beta header is auto-mapped to the right Copilot variant (`claude-opus-4.6-1m` / `claude-opus-4.7-1m-internal`).
+- **Transparent reasoning-tier routing**: Requests for `claude-opus-4.7` with `reasoning_effort: "high"` or `"xhigh"` (or an Anthropic-style `thinking.budget_tokens` ≥ 8192) are auto-rewritten to the dedicated Copilot variants `claude-opus-4.7-high` / `claude-opus-4.7-xhigh` — no client changes needed.
 
 ## Table of Contents
 
@@ -40,7 +45,8 @@ Router-Maestro acts as a proxy that gives you access to models from multiple pro
 - [Deployment](#deployment)
   - [Architecture](#architecture)
   - [Server and Client API Keys](#server-and-client-api-keys)
-  - [Option A: Simple Docker (No HTTPS)](#option-a-simple-docker-no-https)
+  - [Local with pip install](#local-with-pip-install)
+  - [Option A: Remote Docker (No HTTPS)](#option-a-remote-docker-no-https)
   - [Option B: Production (Docker Compose + Traefik + HTTPS)](#option-b-production-docker-compose--traefik--https)
   - [Remote Management](#remote-management)
   - [Advanced Configuration](#advanced-configuration)
@@ -49,13 +55,20 @@ Router-Maestro acts as a proxy that gives you access to models from multiple pro
 
 ## Quick Start
 
-Get up and running in 4 steps:
+Get a local server running in 3 steps. The server (started locally or via Docker with `~/.config/router-maestro` mounted) auto-creates a `local` context with a generated API key — no manual `context add` is needed when client and server are on the same machine.
+
+**Before you start, make sure you have:**
+
+- Docker running locally (or skip to [Local with pip install](#local-with-pip-install))
+- Python 3 with `pip` available for the `router-maestro` CLI on the host
+- An active GitHub Copilot subscription
+- Port 8080 free, or adjust `-p 8080:8080` in the Docker command below
+
+> **About the Router-Maestro API key.** Router-Maestro has **one server key** (format `sk-rm-...`) that every client must send on every request. It is **not** an OpenAI / Anthropic / Gemini / GitHub token — it only authenticates clients to *your* Router-Maestro server. The server auto-generates and persists this key on first start (in `~/.config/router-maestro/contexts.json` or its Docker-mounted equivalent), so you usually never type it by hand: the CLI reads it from the active context and the `config claude-code/codex/gemini` wizards write it into each tool's settings for you. The two times you do touch it explicitly are (1) `router-maestro server show-key` to copy it into a raw `curl` or environment variable like `ROUTER_MAESTRO_API_KEY`, and (2) `router-maestro context add ... --api-key sk-rm-...` when pointing a client machine at a **remote** server (see [Deployment](#deployment)). If a client returns `401`, it almost always means the key it sent doesn't match what the server expects — re-run `server show-key` and compare.
 
 <https://github.com/user-attachments/assets/8f60ec7a-4fbe-4342-9408-084073a4d48d>
 
-### 1. Start the Server
-
-#### Docker (recommended)
+### 1. Start the Server (Docker)
 
 ```bash
 docker run -d --name router-maestro \
@@ -63,89 +76,71 @@ docker run -d --name router-maestro \
   -v ~/.local/share/router-maestro:/home/maestro/.local/share/router-maestro \
   -v ~/.config/router-maestro:/home/maestro/.config/router-maestro \
   likanwen/router-maestro:latest
-
-# The server generates an API key on first start if none is provided.
-docker exec router-maestro router-maestro server show-key
 ```
 
-#### Install locally
+Both volumes are required:
 
-Terminal 1:
+- `.local/share/router-maestro` persists GitHub Copilot OAuth tokens.
+- `.config/router-maestro` persists the auto-generated server API key (in `contexts.json`). Because this directory is shared with the host, the host CLI sees the same `local` context as the container — no extra setup needed.
+
+If you want a fixed key for automation, add `-e ROUTER_MAESTRO_API_KEY="sk-rm-..."`. The API key is the Router-Maestro server key, not an OpenAI, Anthropic, Gemini, or GitHub token. Every client, generated tool config, or raw API call must use the same key.
+
+Confirm the server is up:
+
+```bash
+curl http://localhost:8080/health
+# Expected: {"status":"healthy"}
+```
+
+> Prefer running without Docker? See [Local with pip install](#local-with-pip-install).
+
+### 2. Authenticate with GitHub Copilot
+
+Install the CLI on the host and run `auth login` against the local server. The OAuth device flow is hosted by the server; the CLI just renders the URL/code and polls for completion, so there is no need to `docker exec` into the container.
 
 ```bash
 pip install router-maestro
-router-maestro server start --port 8080
-```
-
-Terminal 2:
-
-```bash
-router-maestro server show-key
-```
-
-### 2. Set Client Context
-
-A context is stored on the machine running the client CLI. If the server runs in Docker, on a VPS, or on another machine, install the CLI on the client machine and save the server endpoint plus the same server API key:
-
-```bash
-pip install router-maestro  # Run on the client machine, not necessarily on the server
-
-router-maestro context add my-router \
-  --endpoint http://localhost:8080 \
-  --api-key "sk-rm-..."
-
-router-maestro context set my-router
-
-# Verifies the endpoint and API key against a protected admin route.
-router-maestro auth list
-```
-
-Use the endpoint that the client can reach, for example `http://localhost:8080` for a local Docker container or `https://api.example.com` for a remote VPS. If you started the server locally with `router-maestro server start` on the same machine, the `local` context may already contain the generated key.
-
-### 3. Authenticate with GitHub Copilot
-
-```bash
 router-maestro auth login github-copilot
 
-# Follow the prompts:
+# Follow the prompts in this terminal:
 #   1. Visit https://github.com/login/device
 #   2. Enter the displayed code
 #   3. Authorize "GitHub Copilot Chat"
 ```
 
-### 4. Configure Your CLI Tool
-
-#### Claude Code
+If you ever need the server API key (for example to paste into a raw `curl`):
 
 ```bash
-router-maestro config claude-code
-# Follow the wizard to select models.
-# The active context's endpoint and API key are written to Claude Code settings.
+router-maestro server show-key
 ```
 
-#### OpenAI Codex (CLI, Extension, App)
+### 3. Configure Your CLI Tool
+
+The config commands read the endpoint and API key from the active context (`local` by default) and write them into the target tool's settings.
 
 ```bash
-router-maestro config codex
-# Follow the wizard to select models.
-# Codex reads the API key from this client-side environment variable.
-# Add it to the client shell profile or app/extension environment:
-export ROUTER_MAESTRO_API_KEY="sk-rm-..."
+router-maestro config claude-code   # Claude Code (Anthropic-compatible)
+router-maestro config codex         # OpenAI Codex (CLI / extension / app)
+router-maestro config gemini        # Gemini CLI
 ```
 
-#### Gemini CLI
+For Codex, also export the same key on the client because the generated config references `ROUTER_MAESTRO_API_KEY`:
 
 ```bash
-router-maestro config gemini
-# Follow the wizard to select models.
-# The active context's endpoint and API key are written to Gemini CLI config.
+export ROUTER_MAESTRO_API_KEY="sk-rm-..."   # add to your shell profile
 ```
 
-The API key is the Router-Maestro server key, not an OpenAI, Anthropic, Gemini, or GitHub token. Every remote client, generated tool config, or raw API call must use the same key that the server generated or was started with.
+**Done!** Run `claude`, `codex`, or `gemini` and your requests route through Router-Maestro.
 
-**Done!** Now run `claude`, `codex`, or `gemini` and your requests will route through Router-Maestro.
+To smoke-test the full path without launching a client:
 
-> **For production deployment**, see the [Deployment](#deployment) section.
+```bash
+curl http://localhost:8080/api/openai/v1/models \
+  -H "Authorization: Bearer $(router-maestro server show-key)"
+# Expected: JSON list of available models
+```
+
+> **Deploying to another machine or a VPS?** See [Deployment](#deployment) for the remote-Docker and Compose + Traefik + HTTPS setups.
 
 ## Core Concepts
 
@@ -290,53 +285,20 @@ router-maestro model list
 | `config codex`       | Generate Codex config (CLI/Extension/App) |
 | `config gemini`      | Generate Gemini CLI .env      |
 
-## Local Integration Tests
-
-The live-backend integration tests are local-only and are not part of GitHub
-Actions. They start a local Router-Maestro server, reuse your existing
-Router-Maestro config/auth files, and send requests to the real GitHub Copilot
-backend. The suite covers model invocation paths only: OpenAI Chat, OpenAI
-Responses, Anthropic Messages/count_tokens, Gemini generateContent/stream/countTokens,
-tool calls, streaming, usage accounting, Anthropic thinking budgets, OpenAI
-reasoning_effort, Gemini-family API calls, and the full Copilot model matrix by
-default. Admin endpoints are intentionally not covered by these tests.
-
-Prerequisites:
-
-```bash
-uv run router-maestro auth login github-copilot
-```
-
-Run them explicitly:
-
-```bash
-make integration-test
-```
-
-Optional overrides:
-
-```bash
-RM_INTEGRATION_MODEL=github-copilot/gpt-4o make integration-test
-RM_INTEGRATION_TOOL_MODEL=github-copilot/gpt-4o make integration-test
-RM_INTEGRATION_RESPONSES_MODEL=github-copilot/gpt-5.4-mini make integration-test
-RM_INTEGRATION_MODELS=github-copilot/gpt-4o,github-copilot/claude-sonnet-4.5 make integration-test
-RM_INTEGRATION_MAX_MODELS=8 make integration-test
-RM_INTEGRATION_MAX_REASONING_MODELS=3 make integration-test
-RM_INTEGRATION_MAX_REASONING_MODELS=0 make integration-test  # full reasoning sweep
-```
-
 ## API Reference
 
 ### OpenAI-Compatible
 
 ```bash
-# Chat completions
-POST /api/openai/v1/chat/completions
-{
-  "model": "github-copilot/gpt-4o",
-  "messages": [{"role": "user", "content": "Hello"}],
-  "stream": false
-}
+# Chat completions — full curl example
+curl http://localhost:8080/api/openai/v1/chat/completions \
+  -H "Authorization: Bearer sk-rm-..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "github-copilot/gpt-4o",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": false
+  }'
 
 # List models
 GET /api/openai/v1/models
@@ -468,43 +430,36 @@ graph TD
 
 Router-Maestro has one server API key. The server uses it to protect every API route except public health/status endpoints, and every client must send that same key.
 
-You can provide the key explicitly with `ROUTER_MAESTRO_API_KEY` or `router-maestro server start --api-key ...`. If you do not provide one, `router-maestro server start` generates a `sk-rm-...` key on first start and stores it in the server-side `local` context. This works in Docker too because the image starts the server with the same CLI command.
-
-When server and client are on different machines, do not assume the server host has the `router-maestro` CLI outside Docker. Use one of these server-side commands to read the key, then copy it into the client machine's context:
+You can provide the key explicitly with `ROUTER_MAESTRO_API_KEY` or `router-maestro server start --api-key ...`. If you do not, the server generates a `sk-rm-...` key on first start and persists it in the `local` context inside `contexts.json` (the Docker image runs the same `server start` command, so the same behavior applies there). To read it later:
 
 ```bash
-# Docker run deployment
-docker exec router-maestro router-maestro server show-key
-
-# Docker Compose deployment
-docker compose exec router-maestro router-maestro server show-key
-
-# Non-Docker local install
-router-maestro server show-key
+router-maestro server show-key                                # local install / inside the container
+docker exec router-maestro router-maestro server show-key      # remote Docker host (run over SSH)
+docker compose exec router-maestro router-maestro server show-key   # Docker Compose
 ```
 
-On each client machine:
+Authentication (`router-maestro auth login github-copilot`) and config (`router-maestro config claude-code` / `codex` / `gemini`) always run from the client and use the active context's endpoint + key. They never need `docker exec` because the server hosts the OAuth device flow and exposes it via the admin HTTP API.
+
+### Local with pip install
+
+If you would rather not use Docker, run the server directly on the same machine. The `local` context is auto-created on first start, so the host CLI works against `localhost:8080` with zero context setup.
 
 ```bash
 pip install router-maestro
-
-router-maestro context add my-vps \
-  --endpoint https://api.example.com \
-  --api-key "sk-rm-..."
-
-router-maestro context set my-vps
-router-maestro auth list
+router-maestro server start --port 8080            # leave running in this terminal
+router-maestro auth login github-copilot           # in a second terminal
+router-maestro config claude-code                  # or: config codex / config gemini
 ```
 
-Run `router-maestro config claude-code`, `router-maestro config codex`, or `router-maestro config gemini` from the client machine after selecting the context. The config commands use the active context endpoint; Claude Code and Gemini receive the API key in their generated config, while Codex uses `env_key = "ROUTER_MAESTRO_API_KEY"`, so set that environment variable on the Codex client machine to the same server key and keep it available when Codex runs.
+For a fixed key, set `ROUTER_MAESTRO_API_KEY` before `server start` or pass `--api-key`.
 
-### Option A: Simple Docker (No HTTPS)
+### Option A: Remote Docker (No HTTPS)
 
-**Use when:** local testing, running behind an existing reverse proxy (Nginx, Caddy, etc.), or on an internal network.
+**Use when:** running on another machine on your LAN/VPN, or behind an existing reverse proxy (Nginx, Caddy, etc.) that handles TLS.
 
-**Prerequisites:** Docker installed.
+**Prerequisites:** Docker installed on the server host; SSH access to that host; the Router-Maestro CLI installed on your client machine (`pip install router-maestro`).
 
-**Step 1 — Start the container**
+**Step 1 — Start the container on the server host**
 
 ```bash
 docker run -d --name router-maestro \
@@ -514,63 +469,66 @@ docker run -d --name router-maestro \
   likanwen/router-maestro:latest
 ```
 
-This command does not set `ROUTER_MAESTRO_API_KEY`; the server generates and persists one automatically. If you need a fixed key for automation, add `-e ROUTER_MAESTRO_API_KEY="sk-rm-..."`.
+The server generates and persists an API key automatically. For a fixed key, add `-e ROUTER_MAESTRO_API_KEY="sk-rm-..."`.
 
-**Step 2 — Read the server API key**
+**Step 2 — Read the server API key from the server host**
 
 ```bash
-docker exec router-maestro router-maestro server show-key
+ssh user@server-host docker exec router-maestro router-maestro server show-key
 ```
 
-Save this key for client contexts and API calls.
+Copy the printed key for the next step.
 
-**Step 3 — Authenticate with GitHub Copilot on the server**
+**Step 3 — Add the server as a context on your client machine**
 
 ```bash
-docker exec -it router-maestro router-maestro auth login github-copilot
-# 1. Visit the URL shown
-# 2. Enter the code
+router-maestro context add my-server \
+  --endpoint http://server-host:8080 \
+  --api-key "sk-rm-..."
+
+router-maestro context set my-server
+router-maestro context test          # verify endpoint + key
+```
+
+**Step 4 — Authenticate with GitHub Copilot from the client**
+
+The auth command targets the active context, so this runs against the remote server over HTTP — no `docker exec` needed.
+
+```bash
+router-maestro auth login github-copilot
+# 1. Visit the URL shown in this terminal
+# 2. Enter the displayed code
 # 3. Authorize "GitHub Copilot Chat"
 ```
 
-**Step 4 — Configure each client machine**
-
-Install the CLI on the client machine, not necessarily on the Docker host:
+**Step 5 — Configure your CLI tool from the client**
 
 ```bash
-pip install router-maestro
-
-router-maestro context add docker \
-  --endpoint http://localhost:8080 \
-  --api-key "sk-rm-..."
-
-router-maestro context set docker
-router-maestro config claude-code  # or: config codex / config gemini
+router-maestro config claude-code   # or: config codex / config gemini
 ```
 
-For remote Docker hosts, replace `http://localhost:8080` with the URL reachable from the client.
-
-**Step 5 — Verify**
+**Step 6 — Verify**
 
 ```bash
-curl http://localhost:8080/health
+curl http://server-host:8080/health
 # Expected: {"status":"healthy"}
 
-curl http://localhost:8080/api/openai/v1/models \
+curl http://server-host:8080/api/openai/v1/models \
   -H "Authorization: Bearer sk-rm-..."
 # Expected: JSON list of available models
 ```
 
 ### Option B: Production (Docker Compose + Traefik + HTTPS)
 
-**Use when:** deploying to a public-facing VPS with a domain name. Provides automatic HTTPS via Let's Encrypt with Cloudflare DNS challenge.
+**Use when:** deploying to a public-facing VPS with a domain name. Provides automatic HTTPS via Let's Encrypt with the Cloudflare DNS challenge.
 
 **Prerequisites:**
 - A VPS with Docker and Docker Compose installed
 - A domain name (e.g., `api.example.com`) with DNS pointing to your VPS
 - A Cloudflare account managing your domain's DNS (for automatic HTTPS)
+- The Router-Maestro CLI installed on your client machine (`pip install router-maestro`)
 
-**Step 1 — Clone the repository**
+**Step 1 — Clone the repository on the VPS**
 
 ```bash
 git clone https://github.com/MadSkittles/Router-Maestro.git
@@ -602,52 +560,49 @@ docker compose up -d
 
 This starts both Traefik (reverse proxy) and Router-Maestro. Traefik will automatically obtain an HTTPS certificate for your domain.
 
-**Step 4 — Read the server API key**
+**Step 4 — Read the server API key from the VPS**
 
 ```bash
 docker compose exec router-maestro router-maestro server show-key
 ```
 
-If you set `ROUTER_MAESTRO_API_KEY` in `.env` or in the shell running Docker Compose, this prints that key. If you left it blank and it was not set in the shell, this prints the generated key stored in the server's mounted config.
+If you set `ROUTER_MAESTRO_API_KEY` in `.env` or in the shell running Docker Compose, this prints that key. Otherwise it prints the generated key stored in the server's mounted config.
 
-**Step 5 — Authenticate with GitHub Copilot on the server**
-
-```bash
-docker compose exec router-maestro router-maestro auth login github-copilot
-# 1. Visit the URL shown
-# 2. Enter the code
-# 3. Authorize "GitHub Copilot Chat"
-```
-
-**Step 6 — Set up remote management and client config**
+**Step 5 — Add the VPS as a context on your client machine**
 
 ```bash
-pip install router-maestro   # run on the client machine
-
 router-maestro context add my-vps \
   --endpoint https://api.example.com \
   --api-key "sk-rm-..."
 
 router-maestro context set my-vps
-router-maestro auth list
+router-maestro context test
 ```
 
-Now all CLI commands run against your VPS:
+**Step 6 — Authenticate with GitHub Copilot from the client**
 
 ```bash
-router-maestro model list          # list models on VPS
-router-maestro auth list           # check auth status on VPS
-router-maestro config claude-code  # configure Claude Code to use VPS
-router-maestro config codex        # configure Codex; also export ROUTER_MAESTRO_API_KEY
+router-maestro auth login github-copilot
+# Targets the VPS through the active context — no docker compose exec needed.
+# 1. Visit the URL shown
+# 2. Enter the displayed code
+# 3. Authorize "GitHub Copilot Chat"
 ```
 
-For Codex clients, add the same key to the client shell profile or app/extension environment because the generated Codex config references `ROUTER_MAESTRO_API_KEY`:
+**Step 7 — Configure your CLI tool from the client**
 
 ```bash
-export ROUTER_MAESTRO_API_KEY="sk-rm-..."
+router-maestro model list           # confirm models load from the VPS
+router-maestro config claude-code   # or: config codex / config gemini
 ```
 
-**Step 7 — Verify**
+For Codex, also export the same key on the client because the generated config references `ROUTER_MAESTRO_API_KEY`:
+
+```bash
+export ROUTER_MAESTRO_API_KEY="sk-rm-..."   # add to your shell profile
+```
+
+**Step 8 — Verify**
 
 ```bash
 curl https://api.example.com/health
@@ -698,3 +653,38 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Local Integration Tests
+
+The live-backend integration tests are local-only and are not part of GitHub
+Actions. They start a local Router-Maestro server, reuse your existing
+Router-Maestro config/auth files, and send requests to the real GitHub Copilot
+backend. The suite covers model invocation paths only: OpenAI Chat, OpenAI
+Responses, Anthropic Messages/count_tokens, Gemini generateContent/stream/countTokens,
+tool calls, streaming, usage accounting, Anthropic thinking budgets, OpenAI
+reasoning_effort, Gemini-family API calls, and the full Copilot model matrix by
+default. Admin endpoints are intentionally not covered by these tests.
+
+Prerequisites:
+
+```bash
+uv run router-maestro auth login github-copilot
+```
+
+Run them explicitly:
+
+```bash
+make integration-test
+```
+
+Optional overrides:
+
+```bash
+RM_INTEGRATION_MODEL=github-copilot/gpt-4o make integration-test
+RM_INTEGRATION_TOOL_MODEL=github-copilot/gpt-4o make integration-test
+RM_INTEGRATION_RESPONSES_MODEL=github-copilot/gpt-5.4-mini make integration-test
+RM_INTEGRATION_MODELS=github-copilot/gpt-4o,github-copilot/claude-sonnet-4.5 make integration-test
+RM_INTEGRATION_MAX_MODELS=8 make integration-test
+RM_INTEGRATION_MAX_REASONING_MODELS=3 make integration-test
+RM_INTEGRATION_MAX_REASONING_MODELS=0 make integration-test  # full reasoning sweep
+```
